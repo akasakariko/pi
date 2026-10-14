@@ -605,6 +605,24 @@ export function resolveCliModel(options: {
 	};
 }
 
+/** Describe an unusable saved default and the model selected in its place. */
+export function getDefaultModelFallbackMessage(options: {
+	defaultProvider?: string;
+	defaultModelId?: string;
+	modelRuntime: ModelRuntime;
+	fallbackModel?: Model<Api>;
+}): string | undefined {
+	const { defaultProvider, defaultModelId, modelRuntime, fallbackModel } = options;
+	if (!defaultProvider || !defaultModelId) return undefined;
+
+	const savedModel = modelRuntime.getModel(defaultProvider, defaultModelId);
+	if (savedModel && modelRuntime.hasConfiguredAuth(savedModel.provider)) return undefined;
+
+	const reason = savedModel ? "no authentication configured" : "not found";
+	const message = `Could not use default model ${defaultProvider}/${defaultModelId} (${reason})`;
+	return fallbackModel ? `${message}. Using ${fallbackModel.provider}/${fallbackModel.id}` : message;
+}
+
 export interface InitialModelResult {
 	model: Model<Api> | undefined;
 	thinkingLevel: ThinkingLevel;
@@ -661,15 +679,28 @@ export async function findInitialModel(options: {
 		}
 	}
 
+	const withDefaultModelWarning = (
+		model: Model<Api> | undefined,
+		thinkingLevel: ThinkingLevel,
+	): InitialModelResult => ({
+		model,
+		thinkingLevel,
+		fallbackMessage: getDefaultModelFallbackMessage({
+			defaultProvider,
+			defaultModelId,
+			modelRuntime,
+			fallbackModel: model,
+		}),
+	});
+
 	// 2. Use first model from scoped models (skip if continuing/resuming)
 	if (scopedModels.length > 0 && !isContinuing) {
 		const scopedModel = scopedModels[0];
 		const perModel = modelThinkingLevels?.[`${scopedModel.model.provider}/${scopedModel.model.id}`];
-		return {
-			model: scopedModel.model,
-			thinkingLevel: scopedModel.thinkingLevel ?? perModel ?? defaultThinkingLevel ?? DEFAULT_THINKING_LEVEL,
-			fallbackMessage: undefined,
-		};
+		return withDefaultModelWarning(
+			scopedModel.model,
+			scopedModel.thinkingLevel ?? perModel ?? defaultThinkingLevel ?? DEFAULT_THINKING_LEVEL,
+		);
 	}
 
 	// 3. Try saved default from settings if auth is configured.
@@ -696,16 +727,16 @@ export async function findInitialModel(options: {
 			const defaultId = defaultModelPerProvider[provider];
 			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
 			if (match) {
-				return { model: match, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+				return withDefaultModelWarning(match, DEFAULT_THINKING_LEVEL);
 			}
 		}
 
 		// If no default found, use first available
-		return { model: availableModels[0], thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+		return withDefaultModelWarning(availableModels[0], DEFAULT_THINKING_LEVEL);
 	}
 
 	// 5. No model found
-	return { model: undefined, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+	return withDefaultModelWarning(undefined, DEFAULT_THINKING_LEVEL);
 }
 
 /**

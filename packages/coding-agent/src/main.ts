@@ -45,7 +45,12 @@ import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
-import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
+import {
+	getDefaultModelFallbackMessage,
+	resolveCliModel,
+	resolveModelScope,
+	type ScopedModel,
+} from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
@@ -448,7 +453,7 @@ export async function createSessionManager(
 	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
 }
 
-function buildSessionOptions(
+export function buildSessionOptions(
 	parsed: Args,
 	scopedModels: ScopedModel[],
 	hasExistingSession: boolean,
@@ -457,11 +462,13 @@ function buildSessionOptions(
 ): {
 	options: CreateAgentSessionOptions;
 	cliThinkingFromModel: boolean;
+	modelFallbackMessage: string | undefined;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 } {
 	const options: CreateAgentSessionOptions = {};
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	let cliThinkingFromModel = false;
+	let modelFallbackMessage: string | undefined;
 
 	// Model from CLI
 	// - supports --provider <name> --model <pattern>
@@ -511,6 +518,15 @@ function buildSessionOptions(
 			}
 		} else {
 			options.model = scopedModels[0].model;
+			// An explicit --models scope overrides the saved default intentionally.
+			if (!parsed.models?.length) {
+				modelFallbackMessage = getDefaultModelFallbackMessage({
+					defaultProvider: savedProvider,
+					defaultModelId: savedModelId,
+					modelRuntime,
+					fallbackModel: options.model,
+				});
+			}
 			// Use thinking level from first scoped model if explicitly set
 			if (!parsed.thinking && scopedModels[0].thinkingLevel) {
 				options.thinkingLevel = scopedModels[0].thinkingLevel;
@@ -549,7 +565,7 @@ function buildSessionOptions(
 		options.excludeTools = [...parsed.excludeTools];
 	}
 
-	return { options, cliThinkingFromModel, diagnostics };
+	return { options, cliThinkingFromModel, modelFallbackMessage, diagnostics };
 }
 
 function resolveCliPaths(cwd: string, paths: string[] | undefined): string[] | undefined {
@@ -817,6 +833,7 @@ export async function main(args: string[], options?: MainOptions) {
 		const {
 			options: sessionOptions,
 			cliThinkingFromModel,
+			modelFallbackMessage: scopedModelFallbackMessage,
 			diagnostics: sessionOptionDiagnostics,
 		} = buildSessionOptions(
 			parsed,
@@ -857,6 +874,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 		return {
 			...created,
+			modelFallbackMessage: created.modelFallbackMessage ?? scopedModelFallbackMessage,
 			services,
 			diagnostics,
 		};
